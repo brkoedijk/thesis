@@ -14,6 +14,8 @@ import numpy as np
 from cdxbasics.dynaplot import colors_tableau, figure
 from cdxbasics.util import uniqueHash
 from scipy.optimize import bisect
+import seaborn as sns
+import matplotlib.pyplot as plt
 
 # from tqdm import tqdm
 from scipy.stats import norm
@@ -897,20 +899,22 @@ class PPAWorld(object):
                 ) / (strikes[j] - strikes[j - 1])
             return w
 
-        def ppa_payoff(path_history):
+        def ppa_payoff(path_history, Q_tilde):
             """
             path_history: tensor/array van vorm (nSamples, nSteps + 1, nFeatures)
             Feature 0: Forward Price f(t,T)
             Feature 1: Onshore Infeed realization/forecast
+            Feature 2: Wind production with congestion
             """
             f_T_T = path_history[:, -1, 0]  # Spot price at T
             q_T = path_history[:, -1, 1]  # Realized infeed at T
 
-            strike = 100.0
+            ppa_strike = 100.0
             capacity = 1.0
 
             # Payoff voor de offtaker (buyer of the PPA)
-            payoff = capacity * q_T * (f_T_T - strike)
+            payoff =  Q_tilde * (f_T_T - ppa_strike)
+            # payoff = capacity * Q_tilde * (f_T_T - ppa_strike)
 
             return payoff
 
@@ -964,12 +968,15 @@ class PPAWorld(object):
 
         nSamples = config("samples", 100000, int, help="Number of simulated paths")
         nSteps = config("steps", 48, int, help="Number of time steps")
+        seed = config("seed", 2312414312, int, help="Random seed")
         T_max = config("max_time", 48, int, help="Maximum time")
         dt = config("dt_replicate", T_max / nSteps, float, help="Time per timestep")
         time_left = (
             np.linspace(float(nSteps), 1.0, nSteps, endpoint=True, dtype=self.np_dtype)
             * dt
         )
+
+        np.random.seed(seed)
 
         # OU parameters
         kappa_q2 = config(
@@ -1022,6 +1029,48 @@ class PPAWorld(object):
         q_target = config(
             "q_target", 0.5, float, help="target for wind aggregate at time 0"
         )
+        synthetic_mean_reversion = config(
+            "synthetic_mean_reversion",
+            kappa_q1,
+            float,
+            help="Mean reversion used by the synthetic latent wind field.",
+        )
+        synthetic_vol = config(
+            "synthetic_vol",
+            sigma_q1,
+            float,
+            help="Per-site volatility scale used by the synthetic latent wind field.",
+        )
+        synthetic_target = config(
+            "synthetic_target",
+            q_target,
+            float,
+            help="Common target level used by the synthetic latent wind field.",
+        )
+        synthetic_num_sites = config(
+            "synthetic_num_sites",
+            10,
+            int,
+            help="Number of synthetic sites in the synthetic latent wind field.",
+        )
+        synthetic_spacing = config(
+            "synthetic_spacing",
+            10.0,
+            float,
+            help="Distance between adjacent synthetic sites.",
+        )
+        synthetic_length_scale = config(
+            "synthetic_length_scale",
+            config(
+                "length_scale",
+                50.0,
+                float,
+                help="Legacy alias for synthetic_length_scale.",
+            ),
+            float,
+            help="Spatial correlation length used by the synthetic latent wind field.",
+        )
+        l_max = config("l_max", 100, int, help="congestion limit in congested region")
 
         # forward information at t=0
         f_0_T = config("f_0_T", 100.0, float, help="Forward price at time 0")
@@ -1032,14 +1081,91 @@ class PPAWorld(object):
         w1 = config("w1", 0.8, float, help="weight of onshore renewable infeed")
         w2 = config("w2", 0.2, float, help="weight of offshore renewable infeed")
 
-        model_type = config(
+        legacy_model_type = config(
             "model_type",
-            "A",
+            None,
             str,
-            help="Model choices. {A, B, C} => {aggregate, agg + dispersion, full spatial field}",
+            help="Legacy combined selector. Prefer latent_model_type and feature_model_type.",
+        )
+        latent_model_type = config(
+            "latent_model_type",
+            None,
+            str,
+            help="Latent wind model. One of {replication, synthetic, era5field}.",
+        )
+        feature_model_type = config(
+            "feature_model_type",
+            None,
+            str,
+            help="Agent information set. One of {A, B, C}.",
+        )
+        use_transaction_cost = config(
+            "use_transaction_cost",
+            False,
+            bool,
+            help="Whether to include transaction costs in both dynamic and static hedging.",
         )
 
-        if model_type == "Replication":
+        if isinstance(legacy_model_type, str):
+            legacy_model_type = legacy_model_type.strip()
+            if legacy_model_type.lower() in {"", "none"}:
+                legacy_model_type = None
+            elif legacy_model_type.lower() in {"a", "b", "c"}:
+                legacy_model_type = legacy_model_type.upper()
+
+        if isinstance(latent_model_type, str):
+            latent_model_type = latent_model_type.strip()
+            if latent_model_type.lower() in {"", "none"}:
+                latent_model_type = None
+
+        if isinstance(feature_model_type, str):
+            feature_model_type = feature_model_type.strip()
+            if feature_model_type.lower() in {"", "none"}:
+                feature_model_type = None
+            else:
+                feature_model_type = feature_model_type.upper()
+
+        if latent_model_type is None:
+            if legacy_model_type in [None, "A", "B", "C"]:
+                latent_model_type = "era5field"
+            elif legacy_model_type in ["Replication", "replication"]:
+                latent_model_type = "replication"
+            elif legacy_model_type in [
+                "synthetic_field",
+                "synthethic_field",
+                "synthetic",
+            ]:
+                latent_model_type = "synthetic"
+            else:
+                raise ValueError(
+                    f"Unknown legacy model_type '{legacy_model_type}'. "
+                    "Use latent_model_type in {'replication', 'synthetic', 'era5field'}."
+                )
+        else:
+            latent_model_type = latent_model_type.lower()
+
+        if feature_model_type is None:
+            if legacy_model_type in ["A", "B", "C"]:
+                feature_model_type = legacy_model_type
+            elif legacy_model_type in ["synthetic_field", "synthethic_field"]:
+                feature_model_type = "C"
+            else:
+                feature_model_type = "A"
+
+        valid_latent_model_types = {"replication", "synthetic", "era5field"}
+        valid_feature_model_types = {"A", "B", "C"}
+        if latent_model_type not in valid_latent_model_types:
+            raise ValueError(
+                f"Invalid latent_model_type '{latent_model_type}'. Expected one of "
+                f"{sorted(valid_latent_model_types)}."
+            )
+        if feature_model_type not in valid_feature_model_types:
+            raise ValueError(
+                f"Invalid feature_model_type '{feature_model_type}'. Expected one of "
+                f"{sorted(valid_feature_model_types)}."
+            )
+
+        if latent_model_type == "replication":
             num_dim = 2
             k_vals = np.array([kappa_q1, kappa_q2])
             s_vals = np.array([sigma_q1, sigma_q2])
@@ -1056,25 +1182,50 @@ class PPAWorld(object):
 
             # persistence = np.exp(-k_vals * dt)
             # vol_step = s_vals * np.sqrt((1 - np.exp(-2 * k_vals * dt)) / (2 * k_vals))
-        elif model_type == "synthethic_field":
-            num_dim = 10
-            length_scale = config("length_scale", 50.0, float, help="Spatial correlation length")
-            coords = np.array([[i * 10.0, 0.0] for i in range(num_dim)])
+        elif latent_model_type == "synthetic":
+            num_dim = synthetic_num_sites
+            # Instead of uniform spacing, cluster the groups far apart
+            coords_cong = [[i * 10.0, 0.0] for i in range(5)]          # positions 0–40
+            coords_unc  = [[500 + i * 10.0, 0.0] for i in range(5)]    # positions 500–540
+            coords = np.array(coords_cong + coords_unc)
+            # coords = np.array([[i * synthetic_spacing, 0.0] for i in range(num_dim)])
             dist_matrix = cdist(coords, coords, metric='euclidean')
 
-            cov_matrix = (sigma_q1**2) * np.exp(-dist_matrix / length_scale)
+            cov_matrix = (synthetic_vol**2) * np.exp(
+                -dist_matrix / synthetic_length_scale
+            )
 
-            k_vals = np.full(num_dim, kappa_q1)
-            s_vals = np.full(num_dim, sigma_q1)
-            targets = np.full(num_dim, q_target)
+            k_vals = np.full(num_dim, synthetic_mean_reversion)
+            s_vals = np.full(num_dim, synthetic_vol)
+            targets = np.full(num_dim, synthetic_target)
             model_weights = np.ones(num_dim) / num_dim
             # 4. Matrices for the simulation loop
-            persistence = np.diag(np.exp(-k_vals * dt)) 
+            persistence = np.diag(np.exp(-k_vals * dt))
             
             # Exact discrete step variance matrix
-            discrete_cov = cov_matrix * ((1 - np.exp(-2 * kappa_q1 * dt)) / (2 * kappa_q1))
+            discrete_cov = cov_matrix * (
+                (1 - np.exp(-2 * synthetic_mean_reversion * dt))
+                / (2 * synthetic_mean_reversion)
+            )
             vol_step = np.linalg.cholesky(discrete_cov)
-        
+
+            corr_matrix = cov_matrix / (synthetic_vol ** 2)
+            plt.figure(figsize=(10,8))
+            sns.heatmap(corr_matrix, annot=True, cmap="coolwarm", fmt=".2f", vmin=0, vmax=1)
+            plt.title(f"Synthethic spatial correlation (length scale: {synthetic_length_scale})")
+            plt.xlabel("West -> East")
+            plt.ylabel("West -> East")
+            plt.savefig("corr_matrix_synthetic.jpg", dpi=300)
+            plt.close()
+
+            plt.figure(figsize=(10,8))
+            sns.heatmap(vol_step, annot=True, cmap="viridis", fmt=".3f")
+            plt.title("Cholesky decomposition (Source of noise)")
+            plt.xlabel("Indepdent Noise (z)")
+            plt.ylabel("Location Index (Q)")
+            plt.savefig("vol_step_synthetic.jpg", dpi=300)
+            plt.close()
+            
         else:
             num_dim = 15
             A_mat = np.array(kappa_full)
@@ -1086,19 +1237,10 @@ class PPAWorld(object):
 
             persistence = A_mat
             vol_step = Sigma_mat
-        # elif model_type == "A":
-        #     k_vals = np.array([-np.log(kappa_agg) / dt])
-        #     s_vals = np.array([sigma_agg / np.sqrt(dt)])
-        #     targets = np.array([q_target])
-        #     model_weights = np.array([1.0])
-        #     persistence = np.array([kappa_agg])
-        #     vol_step = np.array([sigma_agg])
-        # elif model_type == "B":
-        #     k_vals = np.array([-np.log(kappa_agg) / dt])
-        #     s_va
 
-        # Times when the weather forecasts are becoming "known" to the power prices -> not in numerical experimets only for figure!
-        update_times = [0, 10, 14, 18, 34, 38, 42]
+        # Times when the weather forecasts are becoming "known" to the power prices
+        update_times = list(range(nSteps+1))
+        # update_times = [0, 10, 14, 18, 34, 38, 42]
 
         # calibration of phi and g0
         # print(sigma_full)
@@ -1127,37 +1269,6 @@ class PPAWorld(object):
         f_t_T = np.zeros((nSamples, nSteps + 1))
         q_forecasts = np.zeros((nSamples, nSteps + 1, num_dim))
 
-        # # calibration of phi's to ensure unbiased start values
-        # phi_q1 = calibrate_phi(q1_target, kappa_q1, sigma_q1, T_max)
-        # phi_q2 = calibrate_phi(q2_target, kappa_q2, sigma_q2, T_max)
-
-        # phi_agg = calibrate_phi(q_target, continuous_kappa, continuous_sigma, T_max )
-
-        # # calibration of g0
-        # E_q_0 = get_expected_q(np.array([0.0]), T_max, kappa_agg, sigma_agg, phi_agg)[0]
-        # g0 = 1.0 - E_q_0
-        # # replication of article
-        # # E_q1_0 = get_expected_q(np.array([0.0]), T_max, kappa_q1, sigma_q1, phi_q1)[0]
-        # # E_q2_0 = get_expected_q(np.array([0.0]), T_max, kappa_q2, sigma_q2, phi_q2)[0]
-        # # g0 = 1.0 - (w1 * E_q1_0 + w2 * E_q2_0)
-
-        # # idiosyncratic start value ??
-        # m0_mean, m0_var = ou_stats(0.0, kappa_p, sigma_p, 0, T_max)
-        # idio0 = 1.0
-
-        # # Simulatie initialisatie
-        # x1 = np.zeros((nSamples, nSteps + 1))
-        # x2 = np.zeros((nSamples, nSteps + 1))
-        # xp = np.zeros((nSamples, nSteps + 1))
-        # f_t_T = np.zeros((nSamples, nSteps + 1))
-        # q1_t_T = np.zeros((nSamples, nSteps + 1))
-        # q2_t_T = np.zeros((nSamples, nSteps + 1))
-
-        # x_agg = np.zeros((nSamples, nSteps + 1))
-        # xp = np.zeros((nSamples, nSteps + 1))
-        # f_t_T = np.zeros((nSamples, nSteps + 1))
-        # q_t_T = np.zeros((nSamples, nSteps + 1))
-
         for t in range(nSteps + 1):
             t_curr = t * dt
 
@@ -1174,9 +1285,13 @@ class PPAWorld(object):
                 #     z[:, 1] = rho * z[:, 0] + np.sqrt(1 - rho**2) * np.random.normal(
                 #         size=nSamples
                 #     )
+
+                # In 'x' wordt de wind de wind voor alle verschillende locaties berekend.
                 x[:, t, :] = (x[:, t - 1, :] @ persistence) + (z @ vol_step.T)
 
                 zp = np.random.normal(size=nSamples)
+
+                # xp is het MOU proces wat de idiosyncratische schokken in de prijs veroorzaakt
                 xp[:, t] = (
                     xp[:, t - 1] * np.exp(-kappa_p * dt)
                     + sigma_p
@@ -1221,52 +1336,38 @@ class PPAWorld(object):
 
             mt_mean, _ = ou_stats(xp[:, t], kappa_p, sigma_p, t_curr, T_max)
             f_t_T[:, t] = f_0_T * (1.0 + mt_mean) * (gt / g0)
-            # OLD PART!
-            # # infeed forecasts
-            # # deleted the update times, this led to not all information used to calculate the forward price.
-            # eq1_m = get_expected_q(
-            #     x1[:, t_minus_idx], T_rem, kappa_q1, sigma_q1, phi_q1
-            # )
-            # eq2_m = get_expected_q(
-            #     x2[:, t_minus_idx], T_rem, kappa_q2, sigma_q2, phi_q2
-            # )
 
-            # q1_t_T[:, t] = eq1_m
-            # q2_t_T[:, t] = eq2_m
 
-            # # forward price
-            # gt = 1.0 - (w1 * eq1_m + w2 * eq2_m)
-
-            # # idiosyncratic component
-            # mt_mean, mt_var = ou_stats(xp[:, t], kappa_p, sigma_p, t_curr, T_max)
-            # idiot = 1.0 + mt_mean
-
-            # # final power price at time t
-            # f_t_T[:, t] = f_0_T * (idiot / idio0) * (gt / g0)
+        capacity = 1.0
+        #installed_cap_per_site = np.full(num_dim, capacity / num_dim) # assumption that every site has the same installed capacity
 
         q_realized_sites = 1.0 / (1.0 + np.exp(-(x[:, -1, :] + phis)))
         q_total_realized = np.sum(model_weights * q_realized_sites, axis=1)
 
-        path_history = np.zeros((nSamples, nSteps + 1, 2), dtype=self.np_dtype)
+        mwh_realized_sites = q_realized_sites * model_weights
+        
+        q_cong = mwh_realized_sites[:, :num_dim // 2].sum(axis=1)
+        q_unc = mwh_realized_sites[:, num_dim // 2 : num_dim].sum(axis=1)
+        q_tilde = np.minimum(q_cong, l_max) + q_unc
+
+        path_history = np.zeros((nSamples, nSteps + 1, 3), dtype=self.np_dtype)
         path_history[:, :, 0] = f_t_T
 
         q_agg_forecast = np.sum(model_weights * q_forecasts, axis=2)
         path_history[:, :-1, 1] = q_agg_forecast[:, :-1]
         path_history[:, -1, 1] = q_total_realized
+        
 
-        # OLD
-        # path_history = np.zeros((nSamples, nSteps, 2))
-        # path_history[:, :, 0] = f_t_T[:, 1:]
+        payoff = ppa_payoff(path_history, q_tilde)
 
-        # q1_realized = 1.0 / (1.0 + np.exp(-(x1[:, -1] + phi_q1)))
-        # q2_realized = 1.0 / (1.0 + np.exp(-(x2[:, -1] + phi_q2)))
-
-        # path_history[:, :, 1] = q1_t_T[:, 1:]
-        # path_history[:, -1, 1] = q1_realized  # actual wind at T
-        payoff = ppa_payoff(path_history)
+        f_T = f_t_T[:, -1]
+        p_capture = (
+            np.mean(f_T[:, np.newaxis] * q_realized_sites, axis=0) / np.mean(q_realized_sites, axis=0)
+        ) 
+        # Wat wil je krijgen? Een ratio voor elke windpark hoeveel de stroom relatief ten opzichte van de gemiddelde marktprijs waard is.
+        cannibal_rat = p_capture / f_0_T
 
         # hedging instrument(s)
-        strike = 100.0
         dS = (
             f_t_T[:, nSteps][:, np.newaxis] - f_t_T[:, :nSteps]
         )  # this is for buying forwards, below is selling.
@@ -1287,9 +1388,13 @@ class PPAWorld(object):
 
         cost_mwh = 0.15 # cost per mwH
 
-        cost_matrix = (f_t_T * (bid_ask_spread_free / 2)) + cost_mwh
+        cost_matrix = (f_t_T[:, :nSteps] * (bid_ask_spread_free / 2.0)) + cost_mwh
 
-        cost = cost_matrix[:,:,np.newaxis]
+        if use_transaction_cost:
+            cost = cost_matrix[:, :, np.newaxis].astype(self.np_dtype, copy=False)
+        else:
+            cost = np.zeros((nSamples, nSteps, 1), dtype=self.np_dtype)
+
         price = f_t_T[:, :nSteps]
         ubnd_a = np.full((nSamples, nSteps, 1), 5)
         lbnd_a = np.full((nSamples, nSteps, 1), -5)
@@ -1325,18 +1430,18 @@ class PPAWorld(object):
             forward_price=f_t_T[:, :-1],
             cost=cost,
         )
-        if model_type in ["Replication", "A"]:
+        if feature_model_type == "A":
             per_step_features.wind_info = q_agg_forecast[:, :-1, np.newaxis]
 
-        elif model_type == "B":
+        elif feature_model_type == "B":
             # agent sees aggregate mean + spatial dispersion
             dispersion = np.var(q_forecasts[:, :-1, :], axis=2)
             per_step_features.wind_info = np.stack(
                 [q_agg_forecast[:, :-1], dispersion], axis=-1
             )
 
-        elif model_type == "C" or model_type == "synthetic_field":
-            # Agent sees all 15 individual site forecasts
+        elif feature_model_type == "C":
+            # Agent sees all individual site forecasts.
             per_step_features.wind_info = q_forecasts[:, :-1, :]
         
         self.data.features = pdct(per_step=per_step_features, per_path=pdct())
@@ -1383,6 +1488,9 @@ class PPAWorld(object):
             q_total_realized=q_total_realized,
             payoff=payoff,
             path_history=path_history,
+            cannibal_rat = cannibal_rat,
+            q_tilde=q_tilde,
+            q_cong=q_cong
         )
         # Keep details strictly numeric so assert_iter_not_is_nan can validate it.
         if num_dim > 1:
@@ -1404,8 +1512,11 @@ class PPAWorld(object):
         self.tf_y = tf.zeros((nSamples,), dtype=self.tf_dtype)
         self.nSteps = nSteps
         self.nSamples = nSamples
-        self.nInst = 1 if strike <= 0.0 else 2
+        self.nInst = dInsts.shape[-1]
         self.dt = dt
+        self.latent_model_type = latent_model_type
+        self.feature_model_type = feature_model_type
+        self.use_transaction_cost = use_transaction_cost
         self.timeline = (
             np.cumsum(
                 np.linspace(0.0, nSteps, nSteps + 1, endpoint=True, dtype=np.float32)
@@ -1417,6 +1528,47 @@ class PPAWorld(object):
         # Static and dynamic volume hedging?
 
         # Feature engineering
+
+    def get_static_pnl(self, delta):
+        """Berekent de P&L vector voor een specifieke vaste delta."""
+        ppa_payoff = self.details.payoff
+        # De hedge P&L: delta * (S_0 - S_T) [verkoop van forwards]
+        price_change = self.details.forward_price[:, -1] - self.details.forward_price[:, 0]
+        hedge_pnl = delta * (-price_change)
+        if self.use_transaction_cost:
+            entry_cost = np.abs(delta) * self.data.market.cost[:, 0, 0]
+            return ppa_payoff + hedge_pnl - entry_cost
+        return ppa_payoff + hedge_pnl
+
+    def get_optimal_static_delta(self, lmbda=19.0):
+        """
+        Vindt de delta die de 5% ES (CVaR) minimaliseert.
+        lmbda=19.0 komt overeen met 5% ES in jouw objectives.py.
+        """
+        from scipy.optimize import minimize_scalar
+        from .objectives import oce_utility
+        import numpy as np
+
+        # Haal data op
+        payoffs = self.details.payoff
+        price_changes = self.details.forward_price[:, -1] - self.details.forward_price[:, 0]
+        cost_at_entry = self.data.market.cost[:, 0, 0]
+
+        # De doelfunctie die de optimizer moet minimaliseren
+        def objective(d):
+            # Bereken P&L voor deze specifieke d
+            pnl = payoffs + d * (-price_changes)
+            if self.use_transaction_cost:
+                pnl = pnl - np.abs(d) * cost_at_entry
+            # Minimaliseer het risico (dus maximaliseer de utility)
+            # We gebruiken de negatieve utility omdat de optimizer minimaliseert
+            return -oce_utility(utility='cvar', lmbda=lmbda, X=pnl)
+
+        # Zoek de beste d tussen 0 en 1 (of breder)
+        res = minimize_scalar(objective, bounds=(0, 1.5), method='bounded')
+        
+        _log.info(f"Optimale Statische Delta gevonden: {res.x:.4f}")
+        return res.x
 
     def clone(self, config_overwrite=Config(), **kwargs):
         """

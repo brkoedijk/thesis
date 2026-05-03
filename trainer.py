@@ -47,8 +47,8 @@ class TrainingProgressData(object):
     def __init__(self, *, gym, world, val_world, result0 ):
         """ Initialize data """
         self.result0          = result0                     # initil results from calling gym() on the training set
-        self.training_result  = None                        # full results corresponding to current weights, training set
-        self.val_result       = None                        # full results corresponding to current weights, validation set
+        self.training_result  = npCast( result0 )           # full results corresponding to current weights, training set
+        self.val_result       = npCast( gym(val_world.tf_data) )  # full results corresponding to current weights, validation set
         self.times            = []                          # times per epoch
         
         # track progress
@@ -60,9 +60,9 @@ class TrainingProgressData(object):
         self.losses_err.training = []                       # std error for training loss
         self.losses_err.val      = []                       # std error for validation loss
 
-        self.init_loss         = mean( world.sample_weights, result0.loss )
-        self.init_loss_err     = err( world.sample_weights, result0.loss )
-        self.best_loss         = self.init_loss 
+        self.init_loss         = mean( val_world.sample_weights, self.val_result.loss )
+        self.init_loss_err     = err( val_world.sample_weights, self.val_result.loss )
+        self.best_loss         = self.init_loss
         self.best_loss_err     = self.init_loss_err
         self.best_weights      = gym.get_weights()
         self.best_epoch        = -1
@@ -110,13 +110,12 @@ class TrainingProgressData(object):
         self.utilities.val_util.append(      mean(val_world.sample_weights, self.val_result.utility ) )
         self.utilities.val_util0.append(     mean(val_world.sample_weights, self.val_result.utility0 ) )
         
-        # store best loss
-        if self.losses.training[-1] < self.best_loss:
-            self.best_loss         = self.losses.training[-1]
-            self.best_loss_err     = self.best_loss_err
+        # store best loss based on validation performance
+        if self.losses.val[-1] < self.best_loss:
+            self.best_loss         = self.losses.val[-1]
+            self.best_loss_err     = self.losses_err.val[-1]
             self.best_weights      = gym.get_weights()
             self.best_epoch        = self.epoch
-            
         # memory usage
         p = psutil.Process()
         with p.oneshot():
@@ -153,11 +152,16 @@ class Monitor(tf.keras.callbacks.Callback):
         self.time0            = None
         self.cache_last_epoch = -1
         self.is_aborted       = False
+        self.early_stopping_wait = 0
 
         self.cache_dir        = config.caching("directory", "./.deephedging_cache", str, "If specified, will use the directory to store a persistence file for the model")
         self.cache_mode       = config.caching("mode", CacheMode.ON, CacheMode.MODES, "Caching strategy: %s" % CacheMode.HELP)
         self.cache_freq       = config.caching("epoch_freq", 10, Int>0, "How often to cache results, in number of epochs")
         cache_file_name       = config.caching("debug_file_name", None, help="Allows overwriting the filename for debugging an explicit cached state")
+        self.early_stopping_active = config.train.early_stopping("active", False, bool, "Whether to stop training early once validation loss has plateaued")
+        self.early_stopping_patience = config.train.early_stopping("patience", 20, Int>0, "Number of epochs without sufficient validation improvement before stopping")
+        self.early_stopping_min_delta = config.train.early_stopping("min_delta", 0.0, float, "Minimum validation-loss improvement required to reset early stopping")
+        self.early_stopping_start_epoch = config.train.early_stopping("start_epoch", 0, Int>=0, "Epoch from which early stopping starts checking for a plateau")
         self.no_graphics      = training_info.output_level != 'all'
         self.print_text       = training_info.output_level != 'quiet'
         self.plotter          = remote_plotter
@@ -258,6 +262,26 @@ class Monitor(tf.keras.callbacks.Callback):
         
         if self.current_epoch % self.cache_freq == 0 and self.cache_mode.write and self.current_epoch > self.cache_last_epoch:
             self.write_cache()
+
+        if self.early_stopping_active:
+            current_val_loss = self.progress_data.losses.val[-1]
+            previous_val_losses = self.progress_data.losses.val[:-1]
+            previous_best_loss = self.progress_data.init_loss if len(previous_val_losses) == 0 else min(previous_val_losses)
+            improved = current_val_loss < (previous_best_loss - self.early_stopping_min_delta)
+
+            if improved:
+                self.early_stopping_wait = 0
+            elif (self.current_epoch + 1) >= self.early_stopping_start_epoch:
+                self.early_stopping_wait += 1
+                if self.early_stopping_wait >= self.early_stopping_patience:
+                    self.model.stop_training = True
+                    self.why_stopped = (
+                        "Early stopping: validation loss plateaued for %ld epochs "
+                        "after epoch %ld" % (
+                            self.early_stopping_patience,
+                            self.current_epoch + 1,
+                        )
+                    )
         
         # plot
         # ----
@@ -295,7 +319,7 @@ class Monitor(tf.keras.callbacks.Callback):
                          training_info     = self.training_info )
             self.plotter.close()
                 
-        if self.print_text: print("\n Status: %s.\n Weights set to best epoch: %ld\n%s Time: %s" % (status, self.progress_data.best_epoch+1,cached_msg,fmt_now()) )
+        if self.print_text: print("\n Status: %s.\n Weights set to best validation epoch: %ld\n%s Time: %s" % (status, self.progress_data.best_epoch+1,cached_msg,fmt_now()) )
     
     def write_cache(self):
         """ Write cache to disk """
@@ -368,8 +392,8 @@ def train(  gym,
     # -------
     
     t0               = time.time()
-    run_eagerly = True # Force it here
-    gym.run_eagerly = True
+    # run_eagerly = True # Force it here
+    # gym.run_eagerly = True
     result0          = gym(world.tf_data)   # builds the model
     gym.compile(    optimizer        = optimzier, 
                     loss             = dict( loss=default_loss ),
@@ -433,6 +457,8 @@ def train(  gym,
                             epochs         = epochs - (monitor.current_epoch+1),
                             callbacks      = monitor if tboard is None else [ monitor, tboard ],
                             verbose        = tf_verbose )
+            if monitor.why_stopped != "Ran all epochs":
+                why_stopped = monitor.why_stopped
         except KeyboardInterrupt:
             why_stopped = "Aborted"
 

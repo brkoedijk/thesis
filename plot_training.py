@@ -20,6 +20,15 @@ _log = Logger(__file__)
 
 colors = colors_tableau
 
+
+def _get_plot_underlying_paths(world):
+    details = world.details
+    if "spot_all" in details:
+        return details.spot_all
+    if "forward_price" in details:
+        return details.forward_price
+    raise KeyError("World details must contain either 'spot_all' or 'forward_price' for plotting.")
+
 # -------------------------------------------------------
 # By epoch
 # -------------------------------------------------------
@@ -566,8 +575,10 @@ class Plotter(object):
                 # by performance - training
                 # Note that subtract the OCE utility from gains (the hedged portfolio) and payoff (the input).
                 # Subtracting the OCE utility means that both are of equivalent utility.
-                spot_ret             = world.details.spot_all[:,-1]      / world.details.spot_all[:,0] - 1.
-                val_spot_ret         = val_world.details.spot_all[:,-1] / val_world.details.spot_all[:,0] - 1.
+                train_underlying_all = _get_plot_underlying_paths(world)
+                val_underlying_all   = _get_plot_underlying_paths(val_world)
+                spot_ret             = train_underlying_all[:,-1] / train_underlying_all[:,0] - 1.
+                val_spot_ret         = val_underlying_all[:,-1]   / val_underlying_all[:,0] - 1.
                 
                 adjusted_training_gains  = progress_data.training_result.gains  - mean(world.sample_weights, progress_data.training_result.utility)
                 adjusted_training_payoff = progress_data.training_result.payoff - mean(world.sample_weights, progress_data.training_result.utility0)
@@ -591,10 +602,10 @@ class Plotter(object):
                 self.plot_deltas_by_step.update( P=world.sample_weights, actions=deltas )
         
                 # activity by time and spot
-                self.plot_action0_by_step.update( P=world.sample_weights, actions=progress_data.training_result.actions, spot_all= world.details.spot_all, spot_ret=spot_ret )
-                self.plot_action0_by_step_std.update( P=world.sample_weights, actions=progress_data.training_result.actions, spot_all= world.details.spot_all, spot_ret=spot_ret )
-                self.plot_delta0_by_step.update( P=world.sample_weights, actions=deltas, spot_all= world.details.spot_all, spot_ret=spot_ret )
-                self.plot_delta0_by_step_std.update( P=world.sample_weights, actions=deltas, spot_all= world.details.spot_all, spot_ret=spot_ret )
+                self.plot_action0_by_step.update( P=world.sample_weights, actions=progress_data.training_result.actions, spot_all=train_underlying_all, spot_ret=spot_ret )
+                self.plot_action0_by_step_std.update( P=world.sample_weights, actions=progress_data.training_result.actions, spot_all=train_underlying_all, spot_ret=spot_ret )
+                self.plot_delta0_by_step.update( P=world.sample_weights, actions=deltas, spot_all=train_underlying_all, spot_ret=spot_ret )
+                self.plot_delta0_by_step_std.update( P=world.sample_weights, actions=deltas, spot_all=train_underlying_all, spot_ret=spot_ret )
         
                 self.fig.render()
 

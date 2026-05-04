@@ -1160,15 +1160,12 @@ class PPAWorld(object):
             discrete_cov = cov_matrix * ((1 - np.exp(-2 * kappa_q1 * dt)) / (2 * kappa_q1))
             vol_step = np.linalg.cholesky(discrete_cov)
 
-            # persistence = np.exp(-k_vals * dt)
-            # vol_step = s_vals * np.sqrt((1 - np.exp(-2 * k_vals * dt)) / (2 * k_vals))
         elif latent_model_type == "synthetic":
             num_dim = synthetic_num_sites
             # Instead of uniform spacing, cluster the groups far apart
             coords_cong = [[i * 10.0, 0.0] for i in range(5)]          # positions 0–40
             coords_unc  = [[500 + i * 10.0, 0.0] for i in range(5)]    # positions 500–540
             coords = np.array(coords_cong + coords_unc)
-            # coords = np.array([[i * synthetic_spacing, 0.0] for i in range(num_dim)])
             dist_matrix = cdist(coords, coords, metric='euclidean')
 
             cov_matrix = (synthetic_vol**2) * np.exp(
@@ -1179,10 +1176,10 @@ class PPAWorld(object):
             s_vals = np.full(num_dim, synthetic_vol)
             targets = np.full(num_dim, synthetic_target)
             model_weights = np.ones(num_dim) / num_dim
-            # 4. Matrices for the simulation loop
+            
             persistence = np.diag(np.exp(-k_vals * dt))
             
-            # Exact discrete step variance matrix
+            # exact discrete step variance matrix
             discrete_cov = cov_matrix * (
                 (1 - np.exp(-2 * synthetic_mean_reversion * dt))
                 / (2 * synthetic_mean_reversion)
@@ -1218,7 +1215,7 @@ class PPAWorld(object):
             persistence = A_mat
             vol_step = Sigma_mat
 
-        # Times when the weather forecasts are becoming "known" to the power prices
+        # Times when the weather forecasts are becoming "known" to the power prices -> changed to all steps
         update_times = list(range(nSteps+1))
         # update_times = [0, 10, 14, 18, 34, 38, 42]
 
@@ -1276,32 +1273,6 @@ class PPAWorld(object):
                     * zp
                 )
 
-                # OLD LOOP!
-                # z1 = np.random.normal(size=nSamples)
-                # z_raw = np.random.normal(size=nSamples)
-                # z2 = rho * z1 + np.sqrt(1 - rho**2) * z_raw
-                # zp = np.random.normal(size=nSamples)
-
-                # # evolution of OU processes
-                # x1[:, t] = (
-                #     x1[:, t - 1] * np.exp(-kappa_q1 * dt)
-                #     + sigma_q1
-                #     * np.sqrt((1 - np.exp(-2 * kappa_q1 * dt)) / (2 * kappa_q1))
-                #     * z1
-                # )
-                # x2[:, t] = (
-                #     x2[:, t - 1] * np.exp(-kappa_q2 * dt)
-                #     + sigma_q2
-                #     * np.sqrt((1 - np.exp(-2 * kappa_q2 * dt)) / (2 * kappa_q2))
-                #     * z2
-                # )
-                # xp[:, t] = (
-                #     xp[:, t - 1] * np.exp(-kappa_p * dt)
-                #     + sigma_p
-                #     * np.sqrt((1 - np.exp(-2 * kappa_p * dt)) / (2 * kappa_p))
-                #     * zp
-                # )
-
             eq_m = np.zeros((nSamples, num_dim))
             for i in range(num_dim):
                 eq_m[:, i] = get_expected_q(
@@ -1316,12 +1287,11 @@ class PPAWorld(object):
 
 
         capacity = 1.0
-        #installed_cap_per_site = np.full(num_dim, capacity / num_dim) # assumption that every site has the same installed capacity
 
         q_realized_sites = 1.0 / (1.0 + np.exp(-(x[:, -1, :] + phis)))
         q_total_realized = np.sum(model_weights * q_realized_sites, axis=1)
 
-        mwh_realized_sites = q_realized_sites * model_weights
+        mwh_realized_sites = q_realized_sites * model_weights # model weights makes sure that every site has same installed cap
         
         q_cong = mwh_realized_sites[:, :num_dim // 2].sum(axis=1)
         q_unc = mwh_realized_sites[:, num_dim // 2 : num_dim].sum(axis=1)
@@ -1341,13 +1311,12 @@ class PPAWorld(object):
         p_capture = (
             np.mean(f_T[:, np.newaxis] * q_realized_sites, axis=0) / np.mean(q_realized_sites, axis=0)
         ) 
-        # Wat wil je krijgen? Een ratio voor elke windpark hoeveel de stroom relatief ten opzichte van de gemiddelde marktprijs waard is.
-        cannibal_rat = p_capture / f_0_T
+        cannibal_rat = p_capture / f_0_T # calculation of cannibalization ratio
 
         # hedging instrument(s)
         dS = (
             f_t_T[:, nSteps][:, np.newaxis] - f_t_T[:, :nSteps]
-        )  # this is for buying forwards, below is selling.
+        )  # this is for buying forwards, below is selling. Same thing, different sign.
         # f_t_T[:, :nSteps] - f_t_T[:,nSteps][:, np.newaxis]
 
         dInsts = np.zeros((nSamples, nSteps, 1))
@@ -1422,24 +1391,6 @@ class PPAWorld(object):
             per_step_features.wind_info = q_forecasts[:, :-1, :]
         
         self.data.features = pdct(per_step=per_step_features, per_path=pdct())
-
-        # OLD
-        # self.data.features = pdct(
-        #     per_step=pdct(
-        #         # both spot and option, if present
-        #         # cost   = cost,            # trading cost
-        #         time_left=np.full(
-        #             (nSamples, nSteps), time_left[np.newaxis, :], dtype=self.np_dtype
-        #         ),
-        #         # forward_price = f_t_T[:,1:],
-        #         # q1_forecast = q1_t_T[:,1:],
-        #         # q2_forecast = q2_t_T[:, 1:],
-        #         forward_price=f_t_T[:, :-1],  # Exclude t=T (spot price)
-        #         q1_forecast=q1_t_T[:, :-1],  # Exclude realized wind at T
-        #         q2_forecast=q2_t_T[:, :-1],
-        #     ),
-        #     per_path=pdct(),
-        # )
 
         # the following variables must always be present in any world
         # it allows to cast dimensionless variables to the number of samples
@@ -1648,50 +1599,6 @@ class PPAWorld(object):
             label="mean",
         )
         ax.legend()
-
-        # # drift
-        # ax  = fig.add_plot()
-        # ax.set_title("Drift")
-        # ax.set_xlabel("Time")
-        # for i, color in zip( xSamples, colors_tableau() ):
-        #     ax.plot( timeline, self.details.drift[i,:], "-", color=color )
-        # ax.plot( timeline, np.mean( self.details.drift, axis=0), "_", color="black", label="mean" )
-
-        # # vols
-        # ax  = fig.add_plot()
-        # ax.set_title("Volatilities")
-        # ax.set_xlabel("Time")
-        # for i, color in zip( xSamples, colors_tableau() ):
-        #     ax.plot( timeline, self.data.features.per_step.ivol[i,:], "-", color=color )
-        #     ax.plot( timeline, self.details.rvol[i,:], ":", color=color )
-
-        # if self.nInst > 1:
-        #     # call prices
-        #     ax  = fig.add_plot(True)
-        #     ax.set_title("Call Prices")
-        #     ax.set_xlabel("Time")
-        #     for i, color in zip( xSamples, colors_tableau() ):
-        #         ax.plot( timeline, self.data.features.per_step.call_price[i,:], "-", color=color )
-        #     ax.plot( timeline, np.mean( self.data.features.per_step.call_price, axis=0), "_", color="black", label="mean" )
-        #     ax.legend()
-
-        #     # call delta
-        #     ax  = fig.add_plot()
-        #     ax.set_title("Call Deltas")
-        #     ax.set_xlabel("Time")
-        #     for i, color in zip( xSamples, colors_tableau() ):
-        #         ax.plot( timeline, self.data.features.per_step.call_delta[i,:], "-", color=color )
-        #     ax.plot( timeline, np.mean( self.data.features.per_step.call_delta, axis=0), "_", color="black", label="mean" )
-        #     ax.legend()
-
-        #     # call vega
-        #     ax  = fig.add_plot()
-        #     ax.set_title("Call Vegas")
-        #     ax.set_xlabel("Time")
-        #     for i, color in zip( xSamples, colors_tableau() ):
-        #         ax.plot( timeline, self.data.features.per_step.call_vega[i,:], "-", color=color )
-        #     ax.plot( timeline, np.mean( self.data.features.per_step.call_vega, axis=0), "_", color="black", label="mean" )
-        #     ax.legend()
 
         fig.render()
         del fig

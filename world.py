@@ -833,26 +833,6 @@ class PPAWorld(object):
 
         # simulator
         # ---------
-        # nSteps     = config("steps", 10, int, help="Number of time steps")
-        # nSamples   = config("samples", 1000, int, help="Number of samples")
-        # seed       = config("seed", 2312414312, int, help="Random seed")
-        # nIvSteps   = config("invar_steps", 5, int, help="Number of steps ahead to sample from invariant distribution")
-        # dt         = config("dt", 1./50., float, help="Time per timestep.", help_default="One week (1/50)")
-        # cost_s     = config("cost_s", 0.0002, float, help="Trading cost spot")
-        # ubnd_as    = config("ubnd_as", 5., float, help="Upper bound for the number of shares traded at each time step")
-        # lbnd_as    = config("lbnd_as", -5., float, help="Lower bound for the number of shares traded at each time step")
-        # bs_mode    = config("black_scholes", False, bool, help="Hard overwrite to use a black & scholes model with vol 'rvol' and drift 'drift'. Also turns off the option as a tradable instrument by setting strike = 0.")
-        # no_svol    = config("no_stoch_vol", False, bool, help="If true, turns off stochastic realized and implied vol, by setting meanrev_*vol = 0 and volvol_*vol = 0")
-        # no_sdrift  = config("no_stoch_drift", False, bool, help="If true, turns off the stochastic drift of the asset, by setting meanrev_drift = 0. and drift_vol = 0")
-        # _log.verify( nSteps > 0,    "'steps' must be positive; found %ld", nSteps )
-        # _log.verify( nSamples > 0,  "'samples' must be positive; found %ld", nSamples )
-        # _log.verify( dt > 0., "dt must be positive; found %g", dt )
-        # _log.verify( cost_s >= 0, "'cost_s' must not be negative; found %g", cost_s )
-        # _log.verify( ubnd_as >= 0., "'ubnd_as' must not be negative; found %g", ubnd_as )
-        # _log.verify( lbnd_as <= 0., "'lbnd_as' must not be positive; found %g", lbnd_as )
-        # _log.verify( ubnd_as - lbnd_as > 0., "'ubnd_as - lbnd_as' must be positive; found %g", ubnd_as - lbnd_as)
-
-        # sqrt_time_left = np.sqrt( time_left )
 
         def ou_stats(x0, kappa, sigma, t, T):
             mean = x0 * np.exp(-kappa * (T - t))
@@ -1063,7 +1043,7 @@ class PPAWorld(object):
             "synthetic_length_scale",
             config(
                 "length_scale",
-                50.0,
+                20.0,
                 float,
                 help="Legacy alias for synthetic_length_scale.",
             ),
@@ -1242,9 +1222,6 @@ class PPAWorld(object):
         update_times = list(range(nSteps+1))
         # update_times = [0, 10, 14, 18, 34, 38, 42]
 
-        # calibration of phi and g0
-        # print(sigma_full)
-        # print(sigma_full.shape)
         phis = np.array(
             [
                 calibrate_phi(targets[i], k_vals[i], s_vals[i], T_max)

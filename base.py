@@ -142,8 +142,8 @@ def npCast( x, dtype=None ):
 def tf_glorot_value( shape ):
     """ Return a tensor initialized with the glorotuniform initialize, the default for dense tensors in keras """
     initializer = tf.keras.initializers.GlorotUniform()
-    x = initializer(shape=shape)
-    assert np.sum(np.isnan(x)) == 0, "Internal error: %g" % x
+    x = tf.convert_to_tensor(initializer(shape=shape))
+    tf.debugging.assert_all_finite(x, "Internal error: glorot initializer returned NaNs")
     return x
     
 # -------------------------------------------------

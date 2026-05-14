@@ -87,7 +87,7 @@ class VanillaDeepHedgingGym(tf.keras.Model):
                 First coordinate is number of samples in this batch.
                     market, hedges :            (,M,N) the returns of the hedges, per step, per instrument
                     market, cost:               (,M,N) proportional cost for trading, per step, per instrument
-                    market, ubnd_a and lbnd_a : (,M,N) min max action, per step, per instrument
+                    market, ubnd_a and lbnd_a : (,M,N) min max cumulative position, per step, per instrument
                     market, payoff:             (,M) terminal payoff of the underlying portfolio
                     
                     features, per_step:       (,M,N) list of features per step
@@ -112,6 +112,24 @@ class VanillaDeepHedgingGym(tf.keras.Model):
                 deltas:          (,M,N) deltas, per step, per path
         """
         return self._call( tfCast(data), training )
+
+    def train_step(self, data):
+        """Keras 3-compatible training step for the scalar deep-hedging loss."""
+        x, _, sample_weight = tf.keras.utils.unpack_x_y_sample_weight(data)
+        with tf.GradientTape() as tape:
+            result = self(x, training=True)
+            loss = result["loss"]
+            if isinstance(sample_weight, Mapping):
+                sample_weight = sample_weight.get("loss", None)
+            if sample_weight is not None:
+                sample_weight = tf.reshape(tf.cast(sample_weight, loss.dtype), tf.shape(loss))
+                loss = tf.reduce_sum(loss * sample_weight) / tf.reduce_sum(sample_weight)
+            else:
+                loss = tf.reduce_mean(loss)
+        gradients = tape.gradient(loss, self.trainable_variables)
+        self.optimizer.apply_gradients(zip(gradients, self.trainable_variables))
+        return {"loss_default_loss": loss, "loss": loss}
+
     @tf.function  
     def _call( self, data : dict, training : bool ) -> dict:
         """ The _call function was introduced to allow conversion of numpy arrays into tensors ahead of tf.function tracing """
@@ -132,11 +150,15 @@ class VanillaDeepHedgingGym(tf.keras.Model):
         trading_cost = data['market']['cost']
         ubnd_a       = data['market']['ubnd_a']
         lbnd_a       = data['market']['lbnd_a']
+        ubnd_trade   = data['market'].get('ubnd_trade', tf.ones_like(ubnd_a) * 1.0e6)
+        lbnd_trade   = data['market'].get('lbnd_trade', -tf.ones_like(lbnd_a) * 1.0e6)
         payoff       = data['market']['payoff']
         payoff       = payoff[:,0] if payoff.shape.as_list() == [nBatch,1] else payoff # handle tf<=2.6        
         _log.verify( trading_cost.shape.as_list() == [nBatch, nSteps, nInst], "data['market']['cost']: expected shape %s, found %s", [nBatch, nSteps, nInst], trading_cost.shape.as_list() )
         _log.verify( ubnd_a.shape.as_list() == [nBatch, nSteps, nInst], "data['market']['ubnd_a']: expected shape %s, found %s", [nBatch, nSteps, nInst], ubnd_a.shape.as_list() )
         _log.verify( lbnd_a.shape.as_list() == [nBatch, nSteps, nInst], "data['market']['lbnd_a']: expected shape %s, found %s", [nBatch, nSteps, nInst], lbnd_a.shape.as_list() )
+        _log.verify( ubnd_trade.shape.as_list() == [nBatch, nSteps, nInst], "data['market']['ubnd_trade']: expected shape %s, found %s", [nBatch, nSteps, nInst], ubnd_trade.shape.as_list() )
+        _log.verify( lbnd_trade.shape.as_list() == [nBatch, nSteps, nInst], "data['market']['lbnd_trade']: expected shape %s, found %s", [nBatch, nSteps, nInst], lbnd_trade.shape.as_list() )
         _log.verify( payoff.shape.as_list() == [nBatch], "data['market']['payoff']: expected shape %s, found %s", [nBatch], payoff.shape.as_list() )
         
         # features
@@ -180,9 +202,17 @@ class VanillaDeepHedgingGym(tf.keras.Model):
             action, state_ =  self.agent( live_features, training=training )
             _log.verify( action.shape.as_list() == [nBatch, nInst], "Error: action return by agent: expected shape %s, found %s", [nBatch, nInst], action.shape.as_list() )
             action         += idelta
-            action         =  self.softclip(action, lbnd_a[:,t,:], ubnd_a[:,t,:] )
+            # Optional article-style per-step trade bounds. These are distinct
+            # from the economic inventory bounds below.
+            action         =  tf.minimum( action, ubnd_trade[:,t,:], name="trade_clip_min" )
+            action         =  tf.maximum( action, lbnd_trade[:,t,:], name="trade_clip_max" )
+            # Bounds are economically position bounds. The network proposes a trade
+            # increment, we clip the resulting cumulative delta, then recover the
+            # executed trade increment for PnL and transaction costs.
+            delta_         =  self.softclip(delta + action, lbnd_a[:,t,:], ubnd_a[:,t,:] )
+            action         =  delta_ - delta
             state          =  state_ if self.agent.is_recurrent else state
-            delta          += action
+            delta          =  delta_
 
             # 3: trade
             cost           += tf.reduce_sum( tf.math.abs( action ) * trading_cost[:,t,:], axis=1, name="cost_t" )
@@ -271,7 +301,7 @@ class VanillaDeepHedgingGym(tf.keras.Model):
         """ Returns the number of weights. The model must have been call()ed once """
         assert not self.agent is None, "build() must be called first"
         weights = self.trainable_weights
-        return np.sum( [ np.prod( w.get_shape() ) for w in weights ] )
+        return np.sum( [ np.prod( w.shape ) for w in weights ] )
     
     @property
     def available_features_per_step(self) -> list:
@@ -386,4 +416,3 @@ class VanillaDeepHedgingGym(tf.keras.Model):
 
         
         return True
-

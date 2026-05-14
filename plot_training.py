@@ -26,7 +26,14 @@ def _get_plot_underlying_paths(world):
     if "spot_all" in details:
         return details.spot_all
     if "forward_price" in details:
-        return details.forward_price
+        forward_price = details.forward_price
+        # Legacy training plots expect a single underlying path of shape
+        # (nSamples, nSteps+1). For multi-instrument worlds, use the first
+        # traded forward as the plotting driver so the existing diagnostics
+        # remain available without changing the trainer interface.
+        if len(forward_price.shape) == 3:
+            return forward_price[:, :, 0]
+        return forward_price
     raise KeyError("World details must contain either 'spot_all' or 'forward_price' for plotting.")
 
 # -------------------------------------------------------

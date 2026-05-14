@@ -45,8 +45,11 @@ class VariableLayer(tf.keras.layers.Layer):
         self._available_features = sorted( [ str(k) for k in shapes if not k == DIM_DUMMY ] )
         dummy_shape = shapes.get(DIM_DUMMY, None)
         _log.verify( not dummy_shape is None, "Every data set must have a member '%s' (see base.DIM_DUMMY) of shape (None,1). Data member not found data: %s", DIM_DUMMY, list(self.available_features) )
-        _log.verify( len(dummy_shape) == 2, "Data set member '%s' (see base.DIM_DUMMY) nust be of shape [None,1], not of shape %s", DIM_DUMMY, dummy_shape.as_list() )
-        _log.verify( int(dummy_shape[1]) == 1, "Data set member '%s' (see base.DIM_DUMMY) nust be of shape [None,1], not of shape %s", DIM_DUMMY, dummy_shape.as_list() )
+        dummy_shape_list = (
+            dummy_shape.as_list() if hasattr(dummy_shape, "as_list") else list(dummy_shape)
+        )
+        _log.verify( len(dummy_shape_list) == 2, "Data set member '%s' (see base.DIM_DUMMY) nust be of shape [None,1], not of shape %s", DIM_DUMMY, dummy_shape_list )
+        _log.verify( int(dummy_shape_list[1]) == 1, "Data set member '%s' (see base.DIM_DUMMY) nust be of shape [None,1], not of shape %s", DIM_DUMMY, dummy_shape_list )
         
     def call( self, dummy_data : dict = None, training : bool = False ) -> tf.Tensor:
         """
@@ -335,9 +338,14 @@ class DenseLayer(tf.keras.layers.Layer):
         #     assert self.nFeatures == features.shape[1], ("Condig error: number of features should match up. Found %ld and %ld" % ( self.nFeatures, features.shape[1] ) )
         #     return self.model( features, training=training )
 
-        # compile concatenated feature tensor
-        features = [ data[_] for _ in self.features ]
-        features = tf.concat( features, axis=1, name = "features" )
+        if self.nFeatures == 0:
+            return self.model(data, training=training)
+
+        features = [data[_] for _ in self.features]
+        if len(features) == 1:
+            features = features[0]
+        else:
+            features = tf.concat(features, axis=1, name="features")
  
         assert self.nFeatures == features.shape[1], ("Condig error: number of features should match up. Found %ld and %ld" % ( self.nFeatures, features.shape[1] ) )
         return self.model( features, training=training )

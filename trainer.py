@@ -252,7 +252,7 @@ class Monitor(tf.keras.callbacks.Callback):
                                 val_world  = self.val_world,
                                 loop_epoch = loop_epoch,
                                 time_epoch = time_now - self.time_start,
-                                batch_loss = float( logs['loss_default_loss'] ), # we read the metric instead of 'loss' as this appears to be weighted properly
+                                batch_loss = float( logs.get('loss_default_loss', logs['loss']) ),
                                 )
         assert self.progress_data.epoch >= 0, "Internal error"
         self.time_start = time_now
@@ -395,9 +395,7 @@ def train(  gym,
     # run_eagerly = True # Force it here
     # gym.run_eagerly = True
     result0          = gym(world.tf_data)   # builds the model
-    gym.compile(    optimizer        = optimzier, 
-                    loss             = dict( loss=default_loss ),
-                    weighted_metrics = dict( loss=default_loss ),
+    gym.compile(    optimizer        = optimzier,
                     run_eagerly      = run_eagerly)
     if not learning_rate is None:
         gym.optimizer.lr = float( learning_rate )
@@ -451,9 +449,9 @@ def train(  gym,
         why_stopped = "Training complete"
         try:
             gym.fit(        x              = world.tf_data,
-                            y              = world.tf_y,
+                            y              = dict(loss=world.tf_y),
                             batch_size     = batch_size,
-                            sample_weight  = world.tf_sample_weights * float(world.nSamples),  # sample_weights are poorly handled in TF
+                            sample_weight  = dict(loss=world.tf_sample_weights * float(world.nSamples)),  # sample_weights are poorly handled in TF
                             epochs         = epochs - (monitor.current_epoch+1),
                             callbacks      = monitor if tboard is None else [ monitor, tboard ],
                             verbose        = tf_verbose )
@@ -464,6 +462,4 @@ def train(  gym,
 
     monitor.finalize(status = why_stopped)
     if output_level != "quiet": print("Training terminated. Total time taken %s" % fmt_seconds(time.time()-t0))
-
-
-
+    return monitor

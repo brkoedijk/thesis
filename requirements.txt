@@ -1,3 +1,25 @@
-cdxbasics >= 0.2.24
-tensorflow >= 2.11
-tensorflow_probability >= 0.19
+# Core deep-hedging stack
+cdxbasics==0.2.141
+tensorflow==2.16.2
+tensorflow-macos==2.16.2; platform_system == "Darwin"
+tensorflow-probability==0.24.0
+tf_keras==2.16.0
+
+# Numerical work, plotting, and notebooks
+numpy==1.26.4
+scipy==1.13.1
+pandas==2.3.3
+matplotlib==3.9.4
+seaborn==0.13.2
+psutil==7.2.1
+tqdm==4.67.3
+ipykernel==6.31.0
+ipython==8.18.1
+
+# Data and exploratory analysis scripts
+cdsapi==0.7.7
+entsoe-py==0.7.11
+netCDF4==1.7.2
+xarray==2024.7.0
+scikit-learn==1.6.1
+statsmodels==0.14.6
